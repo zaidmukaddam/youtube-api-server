@@ -2,9 +2,11 @@ import json
 import os
 from urllib.parse import urlparse, parse_qs, urlencode
 from urllib.request import urlopen
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 
@@ -16,6 +18,15 @@ except ImportError:
     )
 
 app = FastAPI(title="YouTube Tools API")
+
+# Enable CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
 
 class YouTubeTools:
     @staticmethod
@@ -124,9 +135,49 @@ class YouTubeTools:
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Error generating timestamps: {str(e)}")
 
+    @staticmethod
+    def get_video_captions_markdown(video_id: str, languages: Optional[List[str]] = None) -> str:
+        """Get captions from a YouTube video and format as markdown."""
+        if not video_id:
+            raise HTTPException(status_code=400, detail="No video ID provided")
+
+        try:
+            url = f"https://www.youtube.com/watch?v={video_id}"
+            video_data = YouTubeTools.get_video_data(url)
+            
+            captions = None
+            try:
+                if languages:
+                    captions = YouTubeTranscriptApi.get_transcript(video_id, languages=languages)
+                else:
+                    captions = YouTubeTranscriptApi.get_transcript(video_id)
+            except Exception as e:
+                return f"# {video_data.get('title', 'YouTube Video')}\n\nNo captions available for this video.\n\n🔗 [Watch on YouTube]({url})"
+            
+            if not captions:
+                return f"# {video_data.get('title', 'YouTube Video')}\n\nNo captions found for this video.\n\n🔗 [Watch on YouTube]({url})"
+            
+            # Create markdown output
+            markdown = f"# {video_data.get('title', 'YouTube Video')}\n\n"
+            markdown += f"By: {video_data.get('author_name', 'Unknown')}\n\n"
+            markdown += f"🔗 [Watch on YouTube]({url})\n\n"
+            markdown += "## Transcript\n\n"
+            
+            # Merge all captions into a single text block instead of timestamp sections
+            full_text = " ".join([line['text'] for line in captions])
+            markdown += full_text
+            
+            return markdown
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error getting captions for video: {str(e)}")
+
 class YouTubeRequest(BaseModel):
     url: str
     languages: Optional[List[str]] = None
+
+@app.get("/")
+async def root():
+    return {"message": "Hello World"}
 
 @app.post("/video-data")
 async def get_video_data(request: YouTubeRequest):
@@ -142,6 +193,37 @@ async def get_video_captions(request: YouTubeRequest):
 async def get_video_timestamps(request: YouTubeRequest):
     """Endpoint to get video timestamps"""
     return YouTubeTools.get_video_timestamps(request.url, request.languages)
+
+@app.get("/widgets.json")
+async def get_widgets():
+    """Endpoint to get available widgets for OpenBB integration"""
+    widgets = {
+        "youtube_captions": {
+            "name": "YouTube Captions",
+            "description": "Get timestamped transcript from a YouTube video",
+            "type": "markdown",
+            "endpoint": "/youtube/captions",
+            "params": [
+                {
+                    "paramName": "videoId",
+                    "description": "YouTube video ID to get captions from",
+                    "value": "",
+                    "label": "Video ID",
+                    "type": "text",
+                },
+            ],
+        }
+    }
+    return JSONResponse(content=widgets)
+
+@app.get("/youtube/captions")
+async def get_youtube_captions(videoId: str):
+    """Endpoint to get YouTube captions in markdown format for OpenBB integration"""
+    try:
+        markdown_content = YouTubeTools.get_video_captions_markdown(videoId)
+        return PlainTextResponse(content=markdown_content)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")
 
 if __name__ == "__main__":
     # Use environment variable for port, default to 8000 if not set
